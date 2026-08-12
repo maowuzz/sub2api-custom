@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
   "status": "ready",
-  "display_version": "0.1.175-p1",
+  "display_version": "0.1.175-p2",
   "upstream_version": "0.1.175",
   "image": "ghcr.io/maowuzz/sub2api-custom",
-  "image_digest": "sha256:f983de9f66ce9bc1c62bb7ebc6a5b3376adce283949ebe27e79604e6e4aa6ced",
+  "image_digest": "sha256:3c4ed1f88afd88d91bf572bbf38112880b79fc0b313f1cefd8a895ba3eefe66e",
   "upstream_commit": "5935e674a84341c3536e27e6a968384f67d9062b",
-  "custom_commit": "8f024ed447b5f6f7aed172547df750d279592fba",
-  "published_at": "2026-08-12T16:49:41Z",
+  "custom_commit": "c161b6b216bc7aeaca3b7fd36492308365387cb3",
+  "published_at": "2026-08-12T17:12:19Z",
   "release_notes": "Automated airport-subscription patch build for the latest Sub2API upstream source.",
   "html_url": "https://github.com/Wei-Shaw/sub2api/commit/5935e674a84341c3536e27e6a968384f67d9062b",
-  "signature": "c4e83c01accbaf95f98421baddc8397de73046eaf416da6936d844069d30250f"
+  "signature": "b04b3f87959397fe07681b2d8b2f4fa37e8eca38b0b5e645f64b1a145f951926"
 }
