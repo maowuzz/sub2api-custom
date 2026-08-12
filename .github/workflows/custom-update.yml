@@ -78,8 +78,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: ${{ steps.source.outputs.source_dir }}/frontend/pnpm-lock.yaml
 
       - name: Test backend and updater
         if: steps.source.outputs.should_build == 'true'
