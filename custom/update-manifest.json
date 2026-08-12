@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "status": "bootstrap",
+  "display_version": "0.0.0-p0",
+  "upstream_version": "0.0.0",
+  "image": "ghcr.io/maowuzz/sub2api-custom",
+  "image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "upstream_commit": "bootstrap",
+  "custom_commit": "bootstrap",
+  "published_at": "1970-01-01T00:00:00Z",
+  "signature": ""
+}
