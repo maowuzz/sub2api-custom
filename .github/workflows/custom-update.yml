@@ -1,0 +1,189 @@
+name: Build patched Sub2API image
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild even when the upstream commit is unchanged
+        required: false
+        default: false
+        type: boolean
+      patch_revision:
+        description: Patch revision for a forced rebuild
+        required: false
+        default: "1"
+        type: string
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: custom-sub2api-update
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/maowuzz/sub2api-custom
+      UPDATER_IMAGE: ghcr.io/maowuzz/sub2api-custom-updater
+    steps:
+      - name: Check out maintenance repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve latest upstream source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/Wei-Shaw/sub2api.git
+          git fetch --no-tags upstream main
+          upstream_commit="$(git rev-parse upstream/main)"
+          upstream_version="$(git show upstream/main:backend/cmd/server/VERSION | tr -d '[:space:]')"
+          current_upstream="$(jq -r '.upstream_commit // ""' custom/update-manifest.json)"
+          patch_revision="${{ inputs.patch_revision || '1' }}"
+          should_build=true
+          if [[ "${{ inputs.force || false }}" != "true" && "$current_upstream" == "$upstream_commit" ]]; then
+            should_build=false
+          fi
+          source_dir="${RUNNER_TEMP}/sub2api-upstream"
+          git worktree add --detach "$source_dir" upstream/main
+          git -C "$source_dir" apply --3way "$GITHUB_WORKSPACE/custom/patches/proxy-subscriptions.patch"
+          echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
+          echo "upstream_commit=$upstream_commit" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=$upstream_version" >> "$GITHUB_OUTPUT"
+          echo "display_version=${upstream_version}-p${patch_revision}" >> "$GITHUB_OUTPUT"
+          echo "source_dir=$source_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        if: steps.source.outputs.should_build == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ steps.source.outputs.source_dir }}/backend/go.mod
+          cache-dependency-path: ${{ steps.source.outputs.source_dir }}/backend/go.sum
+
+      - name: Set up pnpm
+        if: steps.source.outputs.should_build == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Set up Node.js
+        if: steps.source.outputs.should_build == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ${{ steps.source.outputs.source_dir }}/frontend/pnpm-lock.yaml
+
+      - name: Test backend and updater
+        if: steps.source.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ steps.source.outputs.source_dir }}/backend"
+          go test ./... -count=1
+          go test -tags unit ./internal/service ./internal/config ./internal/handler/admin -count=1
+          cd "${{ steps.source.outputs.source_dir }}/deploy/updater"
+          go test ./... -count=1
+
+      - name: Test and build frontend
+        if: steps.source.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ steps.source.outputs.source_dir }}/frontend"
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test:run
+          pnpm build
+
+      - name: Validate Compose
+        if: steps.source.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ steps.source.outputs.source_dir }}"
+          POSTGRES_PASSWORD=test \
+          MIHOMO_CONTROLLER_SECRET=test \
+          PROXY_SUBSCRIPTION_HMAC_SECRET=test \
+          CUSTOM_UPDATER_SECRET=test \
+          CUSTOM_MANIFEST_HMAC_SECRET=test \
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.proxy-subscriptions.prod.yml config --quiet
+
+      - name: Log in to GHCR
+        if: steps.source.outputs.should_build == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        if: steps.source.outputs.should_build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and publish Sub2API
+        if: steps.source.outputs.should_build == 'true'
+        id: app_image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.source.outputs.source_dir }}
+          file: ${{ steps.source.outputs.source_dir }}/deploy/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.source.outputs.display_version }}
+            ${{ env.IMAGE }}:stable
+          build-args: |
+            VERSION=${{ steps.source.outputs.display_version }}
+            COMMIT=${{ steps.source.outputs.upstream_commit }}+${{ github.sha }}
+            BUILD_TYPE=custom
+            SOURCE_REPOSITORY=https://github.com/maowuzz/sub2api-custom
+            GOPROXY=https://proxy.golang.org,direct
+            GOSUMDB=sum.golang.org
+          cache-from: type=gha,scope=sub2api-custom
+          cache-to: type=gha,mode=max,scope=sub2api-custom
+
+      - name: Build and publish updater
+        if: steps.source.outputs.should_build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ steps.source.outputs.source_dir }}
+          file: ${{ steps.source.outputs.source_dir }}/deploy/updater/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.UPDATER_IMAGE }}:1
+            ${{ env.UPDATER_IMAGE }}:stable
+          cache-from: type=gha,scope=sub2api-updater
+          cache-to: type=gha,mode=max,scope=sub2api-updater
+
+      - name: Publish signed update manifest
+        if: steps.source.outputs.should_build == 'true'
+        env:
+          CUSTOM_MANIFEST_HMAC_SECRET: ${{ secrets.CUSTOM_MANIFEST_HMAC_SECRET }}
+          DISPLAY_VERSION: ${{ steps.source.outputs.display_version }}
+          UPSTREAM_VERSION: ${{ steps.source.outputs.upstream_version }}
+          IMAGE_DIGEST: ${{ steps.app_image.outputs.digest }}
+          UPSTREAM_COMMIT: ${{ steps.source.outputs.upstream_commit }}
+          CUSTOM_COMMIT: ${{ github.sha }}
+          PUBLISHED_AT: ${{ github.event.repository.updated_at }}
+          RELEASE_NOTES: Automated airport-subscription patch build for the latest Sub2API upstream source.
+          HTML_URL: https://github.com/Wei-Shaw/sub2api/commit/${{ steps.source.outputs.upstream_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export IMAGE="${{ env.IMAGE }}"
+          export PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go run ./custom/tools/generate_manifest.go > custom/update-manifest.json
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add custom/update-manifest.json
+          git commit -m "chore: publish ${DISPLAY_VERSION}" || exit 0
+          git push origin HEAD:main
